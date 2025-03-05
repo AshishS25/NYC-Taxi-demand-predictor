@@ -16,9 +16,9 @@ import streamlit as st
 from branca.colormap import LinearColormap
 from streamlit_folium import st_folium
 
-from src.config import DATA_DIR
-from src.inference import fetch_next_hour_predictions, load_batch_of_features_from_store
-from src.plot_utils import plot_prediction
+from src.config import DATA_DIR,FEATURE_GROUP_MODEL_PREDICTION
+from src.inference import fetch_next_hour_predictions,get_feature_store,get_model_predictions, load_model_from_registry,load_batch_of_features_from_store
+from src.plot_utils import plot_prediction, plot_prediction2
 
 # Add parent directory to Python path
 
@@ -216,8 +216,12 @@ def load_shape_data_file(
 # st.set_page_config(layout="wide")
 
 current_date = pd.Timestamp.now(tz="Etc/UTC")
+from zoneinfo import ZoneInfo
+
+current_date2 = pd.Timestamp.now(tz=ZoneInfo("America/New_York"))
+#current_date = pd.Timestamp.now(tz=ZoneInfo("America/New_York"))
 st.title(f"New York Yellow Taxi Cab Demand Next Hour")
-st.header(f'{current_date.strftime("%Y-%m-%d %H:%M:%S")}')
+st.header(f'{current_date2.strftime("%Y-%m-%d %H:%M:%S")}')
 
 progress_bar = st.sidebar.header("Working Progress")
 progress_bar = st.sidebar.progress(0)
@@ -232,6 +236,17 @@ with st.spinner(text="Download shape file for taxi zones"):
 
 with st.spinner(text="Fetching batch of inference data"):
     features = load_batch_of_features_from_store(current_date)
+    model= load_model_from_registry()
+    predictions = get_model_predictions(model, features)
+    predictions["pickup_hour"] = current_date.ceil('h')
+    feature_group = get_feature_store().get_or_create_feature_group(
+    name=FEATURE_GROUP_MODEL_PREDICTION,
+    version=1,
+    description="Predictions from LGBM Model",
+    primary_key=["pickup_location_id", "pickup_hour"],
+    event_time="pickup_hour",
+    )
+    feature_group.insert(predictions, write_options={"wait_for_job": False})
     st.sidebar.write("Inference features fetched from the store")
     progress_bar.progress(2 / N_STEPS)
 
@@ -239,6 +254,7 @@ with st.spinner(text="Fetching batch of inference data"):
 with st.spinner(text="Fetching predictions"):
     predictions = fetch_next_hour_predictions()
     st.sidebar.write("Model was loaded from the registry")
+    
     progress_bar.progress(3 / N_STEPS)
 
 shapefile_path = DATA_DIR / "taxi_zones" / "taxi_zones.shp"
@@ -275,9 +291,55 @@ with st.spinner(text="Plot predicted rides demand"):
 
     # Show sample of the data
     st.sidebar.write("Finished plotting taxi rides demand")
+    import pytz
+    est_timezone = pytz.timezone('US/Eastern')
+    predictions['pickup_hour'] = predictions['pickup_hour'].dt.tz_convert(est_timezone)
     progress_bar.progress(4 / N_STEPS)
+def load_data():
+    # Load the attribute table from the shapefile (ignoring geometry)
+    shapefile_path = DATA_DIR / "taxi_zones" / "taxi_zones.shp"
+    gdf = gpd.read_file(shapefile_path, ignore_geometry=True)
+    
+    # Extract relevant columns
+    if "LocationID" in gdf.columns and "zone" in gdf.columns:
+        return gdf[["LocationID", "zone"]]
+    else:
+        return gdf
 
-st.dataframe(predictions.sort_values("predicted_demand", ascending=False).head(10))
+# Load the dataset
+df = load_data()
+st.title("Zone & Location Selector")
+
+# Create dropdown for Zone
+selected_zone = st.selectbox("Select a Zone:", df["zone"].unique())
+
+# Filter locations based on selected Zone
+filtered_df = df[df["zone"] == selected_zone]
+
+# Get the Location ID based on selected Zone
+selected_location_id = int(filtered_df["LocationID"].iloc[0])   
+#selected_location_id = st.selectbox("Select a Location ID:", predictions["pickup_location_id"].unique())
+
+# Show details of the selected location ID
+st.dataframe(predictions[predictions["pickup_location_id"] == selected_location_id]) 
+# Filter the data for the selected location
+filtered_features = features[features["pickup_location_id"] == selected_location_id]
+filtered_predictions = predictions[predictions["pickup_location_id"] == selected_location_id]
+
+# Check if there is data for the selected location
+if filtered_features.empty or filtered_predictions.empty:
+    st.subheader(f"Predicted Rides for Location ID {selected_location_id}")
+    st.markdown("### 🚖 No rides predicted for the selected location.")
+
+else:
+    fig2 = plot_prediction2(features=filtered_features, prediction=filtered_predictions)
+    st.plotly_chart(fig2, theme="streamlit", use_container_width=True,key="fig2_chart")
+predictionss = predictions.rename(columns={"pickup_location_id": "LocationID"})
+top_10_predictions = predictionss.sort_values("predicted_demand", ascending=False).head(10)
+top_10_predictions = top_10_predictions.merge(df, on="LocationID", how="left")
+top_10_predictions = top_10_predictions.rename(columns={"zone": "Location Name"})
+# Display the top 10 predictions with Zone column
+st.dataframe(top_10_predictions)
 top10 = (
     predictions.sort_values("predicted_demand", ascending=False)
     .head(10)["pickup_location_id"]

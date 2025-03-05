@@ -1,8 +1,10 @@
 from datetime import timedelta
 from typing import Optional
-import numpy as np
+
 import pandas as pd
 import plotly.express as px
+import pytz
+
 
 def plot_aggregated_time_series(
     features: pd.DataFrame,
@@ -12,42 +14,40 @@ def plot_aggregated_time_series(
 ):
     """
     Plots the time series data for a specific location from NYC taxi data.
+
+    Args:
+        features (pd.DataFrame): DataFrame containing feature data, including historical ride counts and metadata.
+        targets (pd.Series): Series containing the target values (e.g., actual ride counts).
+        row_id (int): Index of the row to plot.
+        predictions (Optional[pd.Series]): Series containing predicted values (optional).
+
+    Returns:
+        plotly.graph_objects.Figure: A Plotly figure object showing the time series plot.
     """
-    # Check if row_id exists in the index
-    if row_id not in features.index:
-        # Try to find by pickup_location_id
-        location_features = features[features["pickup_location_id"] == row_id]
-        if len(location_features) == 0:
-            raise ValueError(f"No data found for row_id or location_id {row_id}")
-    else:
-        # Use row_id as index directly
-        location_features = features.loc[[row_id]]
 
-    # Get the actual target
+    #location_features = features[features["pickup_location_id"] == 13817]
+    location_features = features.iloc[row_id]
     actual_target = targets.iloc[row_id]
+    #actual_target = targets[targets["pickup_location_id"] == row_id]
 
-    # Identify time series columns
+    # Identify time series columns (e.g., historical ride counts)
     time_series_columns = [
         col for col in features.columns if col.startswith("rides_t-")
     ]
+    time_series_values = [location_features[col] for col in time_series_columns] + [
+        actual_target
+    ]
 
-    # Extract time series values (handle single row correctly)
-    time_series_values = [
-        location_features[col].iloc[0] for col in time_series_columns
-    ] + [actual_target]
-
-    # Get pickup hour as a single timestamp
-    pickup_hour = location_features["pickup_hour"].iloc[0]
-
-    # Generate corresponding timestamps
+    # Generate corresponding timestamps for the time series
     time_series_dates = pd.date_range(
-        start=pickup_hour - timedelta(hours=len(time_series_columns)),
-        end=pickup_hour,
+        start=location_features["pickup_hour"]
+        - timedelta(hours=len(time_series_columns)),
+        end=location_features["pickup_hour"],
         freq="h",
     )
 
-    # Create the plot title
-    title = f"Pickup Hour: {pickup_hour}, Location ID: {location_features['pickup_location_id'].iloc[0]}"
+    # Create the plot title with relevant metadata
+    title = f"Pickup Hour: {location_features['pickup_hour']}, Location ID: {location_features['pickup_location_id']}"
 
     # Create the base line plot
     fig = px.line(
@@ -61,8 +61,8 @@ def plot_aggregated_time_series(
 
     # Add the actual target value as a green marker
     fig.add_scatter(
-        x=time_series_dates[-1:],
-        y=[actual_target],
+        x=time_series_dates[-1:],  # Last timestamp
+        y=[actual_target],  # Actual target value
         line_color="green",
         mode="markers",
         marker_size=10,
@@ -71,114 +71,95 @@ def plot_aggregated_time_series(
 
     # Optionally add the prediction as a red marker
     if predictions is not None:
-        # Handle different types of prediction objects
-        if isinstance(predictions, np.ndarray):
-            pred_value = predictions[row_id]
-        elif hasattr(predictions, 'iloc'):
-            pred_value = predictions.iloc[row_id]
-        else:
-            pred_value = predictions[row_id]
         fig.add_scatter(
             x=time_series_dates[-1:],  # Last timestamp
-            y=[pred_value],
+            #y=predictions[predictions[row_id]],
+
+            y=[predictions["pickup_location_id" == row_id]],  # Predicted value
             line_color="red",
             mode="markers",
             marker_symbol="x",
             marker_size=15,
             name="Prediction",
         )
-        # fig.add_scatter(
-        #     x=time_series_dates[-1:],
-        #     y=[predictions.iloc[row_id]],
-        #     line_color="red",
-        #     mode="markers",
-        #     marker_symbol="x",
-        #     marker_size=15,
-        #     name="Prediction",
-        # )
 
     return fig
 
+def plot_prediction2(features: pd.DataFrame, prediction: pd.DataFrame):
+    # Validate if features DataFrame is empty
+    if features.empty:
+        raise ValueError("Error: 'features' DataFrame is empty! Ensure valid input.")
 
-# def plot_aggregated_time_series(
-#     features: pd.DataFrame,
-#     targets: pd.Series,
-#     row_id: int,
-#     predictions: Optional[pd.Series] = None,
-# ):
-#     """
-#     Plots the time series data for a specific location from NYC taxi data.
+    # Identify time series columns (e.g., historical ride counts)
+    time_series_columns = [col for col in features.columns if col.startswith("rides_t-")]
 
-#     Args:
-#         features (pd.DataFrame): DataFrame containing feature data, including historical ride counts and metadata.
-#         targets (pd.Series): Series containing the target values (e.g., actual ride counts).
-#         row_id (int): Index of the row to plot.
-#         predictions (Optional[pd.Series]): Series containing predicted values (optional).
+    # Ensure at least one time-series column is present
+    if not time_series_columns:
+        raise ValueError("Error: No historical ride count columns found in 'features'.")
 
-#     Returns:
-#         plotly.graph_objects.Figure: A Plotly figure object showing the time series plot.
-#     """
-#     # Extract the specific location's features and target
-#     # location_features = features[features["pickup_location_id" == row_id]]
-#     location_features = features[features["pickup_location_id"] == row_id]
-#     actual_target = targets.iloc[row_id]
-#     # actual_target = targets[targets["pickup_location_id" == row_id]]
+    # Extract time series values safely
+    time_series_values = [
+        features[col].iloc[0] if col in features else None
+        for col in time_series_columns
+    ] + prediction["predicted_demand"].to_list()
 
-#     # Identify time series columns (e.g., historical ride counts)
-#     time_series_columns = [
-#         col for col in features.columns if col.startswith("rides_t-")
-#     ]
-#     time_series_values = [location_features[col] for col in time_series_columns] + [
-#         actual_target
-#     ]
+    # Convert pickup_hour Series to single timestamp safely
+    try:
+        pickup_hour = pd.Timestamp(features["pickup_hour"].iloc[0])
+    except IndexError:
+        raise ValueError("Error: 'pickup_hour' column is empty or missing.")
 
-#     # Generate corresponding timestamps for the time series
-#     time_series_dates = pd.date_range(
-#         start=location_features["pickup_hour"]
-#         - timedelta(hours=len(time_series_columns)),
-#         end=location_features["pickup_hour"],
-#         freq="h",
-#     )
+    # Convert UTC to Eastern Time (EST)
+    utc_timezone = pytz.utc
+    est_timezone = pytz.timezone("US/Eastern")
 
-#     # Create the plot title with relevant metadata
-#     title = f"Pickup Hour: {location_features['pickup_hour']}, Location ID: {location_features['pickup_location_id']}"
+    if pickup_hour.tzinfo is None:
+        pickup_hour = pickup_hour.tz_localize(utc_timezone)  # Assign UTC if naive
+    pickup_hour = pickup_hour.tz_convert(est_timezone)  # Convert to EST
 
-#     # Create the base line plot
-#     fig = px.line(
-#         x=time_series_dates,
-#         y=time_series_values,
-#         template="plotly_white",
-#         markers=True,
-#         title=title,
-#         labels={"x": "Time", "y": "Ride Counts"},
-#     )
+    # Generate corresponding timestamps for the time series
+    time_series_dates = pd.date_range(
+        start=pickup_hour - timedelta(hours=len(time_series_columns)),
+        end=pickup_hour,
+        freq="h",
+    )
 
-#     # Add the actual target value as a green marker
-#     fig.add_scatter(
-#         x=time_series_dates[-1:],  # Last timestamp
-#         y=[actual_target],  # Actual target value
-#         line_color="green",
-#         mode="markers",
-#         marker_size=10,
-#         name="Actual Value",
-#     )
+    # Ensure length consistency between time and ride counts
+    if len(time_series_dates) != len(time_series_values):
+        raise ValueError("Mismatch: Time series length does not match ride counts.")
 
-#     # Optionally add the prediction as a red marker
-#     if predictions is not None:
-#         fig.add_scatter(
-#             x=time_series_dates[-1:],  # Last timestamp
-#             y=[predictions.iloc[row_id]],
-#             # y=predictions[
-#             #    predictions["pickup_location_id" == row_id]
-#             # ],  # Predicted value
-#             line_color="red",
-#             mode="markers",
-#             marker_symbol="x",
-#             marker_size=15,
-#             name="Prediction",
-#         )
+    # Create a DataFrame for historical data
+    historical_df = pd.DataFrame({"datetime": time_series_dates, "rides": time_series_values})
 
-#     return fig
+    # Safely extract location ID
+    location_id = features["pickup_location_id"].iloc[0] if "pickup_location_id" in features else "Unknown"
+
+    # Create plot title with relevant metadata
+    title = f"Pickup Hour: {pickup_hour}, Location ID: {location_id}"
+
+    # Create the base line plot
+    fig = px.line(
+        historical_df,
+        x="datetime",
+        y="rides",
+        template="plotly_white",
+        markers=True,
+        title=title,
+        labels={"datetime": "Time", "rides": "Ride Counts"},
+    )
+
+    # Add prediction point
+    fig.add_scatter(
+        x=[pickup_hour],  # Last timestamp
+        y=prediction["predicted_demand"].to_list(),
+        line_color="red",
+        mode="markers",
+        marker_symbol="x",
+        marker_size=10,
+        name="Prediction",
+    )
+
+    return fig
 
 
 def plot_prediction(features: pd.DataFrame, prediction: int):
@@ -191,8 +172,16 @@ def plot_prediction(features: pd.DataFrame, prediction: int):
     ] + prediction["predicted_demand"].to_list()
 
     # Convert pickup_hour Series to single timestamp
+    
     pickup_hour = pd.Timestamp(features["pickup_hour"].iloc[0])
+    import pytz
 
+    # Define UTC and EST timezones
+    utc_timezone = pytz.utc
+    est_timezone = pytz.timezone('US/Eastern')
+    if pickup_hour.tzinfo is None:
+        pickup_hour = pickup_hour.tz_localize('UTC')
+    pickup_hour = pickup_hour.tz_convert(est_timezone)
     # Generate corresponding timestamps for the time series
     time_series_dates = pd.date_range(
         start=pickup_hour - timedelta(hours=len(time_series_columns)),
@@ -204,9 +193,17 @@ def plot_prediction(features: pd.DataFrame, prediction: int):
     historical_df = pd.DataFrame(
         {"datetime": time_series_dates, "rides": time_series_values}
     )
+    import pytz
 
+    # Define UTC and EST timezones
+    utc_timezone = pytz.utc
+    est_timezone = pytz.timezone('US/Eastern')
     # Create the plot title with relevant metadata
-    title = f"Pickup Hour: {pickup_hour}, Location ID: {features['pickup_location_id'].iloc[0]}"
+    pickup_hour2=pickup_hour
+    if pickup_hour.tzinfo is None:
+        pickup_hour2 = pickup_hour.tz_localize('UTC')
+    pickup_hour3 = pickup_hour2.tz_convert(est_timezone)
+    title = f"Pickup Hour: {pickup_hour3}, Location ID: {features['pickup_location_id'].iloc[0]}"
 
     # Create the base line plot
     fig = px.line(

@@ -38,7 +38,7 @@ def load_batch_of_features_from_store(
 
     # read time-series data from the feature store
     fetch_data_to = current_date - timedelta(hours=1)
-    fetch_data_from = current_date - timedelta(days=29)
+    fetch_data_from = current_date - timedelta(days=1*29)
     print(f"Fetching data from {fetch_data_from} to {fetch_data_to}")
     feature_view = feature_store.get_feature_view(
         name=config.FEATURE_VIEW_NAME, version=config.FEATURE_VIEW_VERSION
@@ -49,9 +49,8 @@ def load_batch_of_features_from_store(
         end_time=(fetch_data_to + timedelta(days=1)),
     )
     ts_data = ts_data[ts_data.pickup_hour.between(fetch_data_from, fetch_data_to)]
-
-    # Sort data by location and time
-    ts_data.sort_values(by=["pickup_location_id", "pickup_hour"], inplace=True)
+    ts_data.sort_values(["pickup_location_id", "pickup_hour"]).reset_index(drop=True)
+    ts_data["pickup_hour"] = ts_data["pickup_hour"].dt.tz_localize(None)
 
     features = transform_ts_data_info_features(
         ts_data, window_size=24 * 28, step_size=23
@@ -97,16 +96,41 @@ def fetch_next_hour_predictions():
     now = datetime.now(timezone.utc)
     next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
 
+    # Extract components from the rounded-up time
+    year = next_hour.year
+    month = next_hour.month
+    day = next_hour.day
+    hour = next_hour.hour
+
+    # Create date strings in YYYY-MM-DD format
+    current_date = f"{year}-{month:02d}-{day:02d}"
+    next_date = next_hour + timedelta(days=1)
+    next_date_str = next_date.strftime("%Y-%m-%d")
+
     fs = get_feature_store()
-    fg = fs.get_feature_group(name=config.FEATURE_GROUP_MODEL_PREDICTION, version=1)
-    df = fg.read()
+    fg = fs.get_feature_group(
+        name=config.FEATURE_GROUP_MODEL_PREDICTION,
+        version=1
+    )
+
+    # # First get the full day's data from Hopsworks
+    # df = fg.filter(
+    #     (fg.pickup_hour >= current_date) &
+    #     (fg.pickup_hour < next_date_str)
+    # ).read()
+
     # Then filter for next hour in the DataFrame
-    df = df[df["pickup_hour"] == next_hour]
+    query = fg.select_all()
+    df= query.read()
+    hour_str = f"{current_date} {hour:02d}:00"
+    df_hour = df[df['pickup_hour'] == hour_str]
 
     print(f"Current UTC time: {now}")
     print(f"Next hour: {next_hour}")
-    print(f"Found {len(df)} records")
-    return df
+    print(f"Querying for date range: {current_date} to {next_date_str}")
+    print(f"Filtering for hour: {hour_str}")
+    print(f"Found {len(df_hour)} records")
+    return df_hour
 
 
 def fetch_predictions(hours):
